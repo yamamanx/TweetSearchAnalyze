@@ -11,6 +11,12 @@ from aws_xray_sdk.core import patch_all
 
 patch_all()
 
+queries = [
+    'クエリー1',
+    'クエリー2',
+    'クエリー3',
+    'クエリー4'
+]
 secret_name = os.environ.get('SECRET_NAME')
 level = os.environ.get('LOG_LEVEL', 'ERROR')
 
@@ -58,27 +64,31 @@ def get_secret():
 
 def get_tweets(secret, since_id):
     try:
-        twitter = OAuth1Session(
-            secret['api_key'],
-            secret['api_secret_key'],
-            secret['access_token'],
-            secret['access_token_secret']
-        )
-        url = "https://api.twitter.com/1.1/search/tweets.json"
-        params = {
-            'q': 'クラウドプラクティショナー',
-            'count': 100,
-            'since_id': int(since_id)
-        }
+        tweets_array = []
+        for query in queries:
+            twitter = OAuth1Session(
+                secret['api_key'],
+                secret['api_secret_key'],
+                secret['access_token'],
+                secret['access_token_secret']
+            )
+            url = "https://api.twitter.com/1.1/search/tweets.json"
+            params = {
+                'q': query,
+                'count': 100,
+                'since_id': int(since_id)
+            }
 
-        response = twitter.get(
-            url,
-            params=params
-        )
-        logger.info(response.status_code)
-        logger.debug(response.text)
-        tweets = json.loads(response.text)
-        return tweets
+            response = twitter.get(
+                url,
+                params=params
+            )
+            logger.info(response.status_code)
+            logger.debug(response.text)
+            tweets = json.loads(response.text)
+            tweets_array.append(tweets)
+
+        return tweets_array
 
     except Exception as e:
         raise e
@@ -107,26 +117,27 @@ def update_since_id(since_id):
         raise e
 
 
-def kinesis_put_records(tweets):
+def kinesis_put_records(tweets_array):
     try:
         records = []
-        for tweet in tweets['statuses']:
-            payload = {
-                'id': tweet['id_str'],
-                'text': tweet['text'],
-                'source': tweet['source'],
-                'user_name': tweet['user']['name'],
-                'user_id': tweet['user']['id'],
-                'user_screen_name': tweet['user']['screen_name'],
-                'user_followers_count': tweet['user']['followers_count'],
-                'geo': tweet['geo']
-            }
-            logger.debug(payload)
-            record = {
-                'Data': json.dumps(payload),
-                'PartitionKey': tweet['id_str']
-            }
-            records.append(record)
+        for tweets in tweets_array:
+            for tweet in tweets['statuses']:
+                payload = {
+                    'id': tweet['id_str'],
+                    'text': tweet['text'],
+                    'source': tweet['source'],
+                    'user_name': tweet['user']['name'],
+                    'user_id': tweet['user']['id'],
+                    'user_screen_name': tweet['user']['screen_name'],
+                    'user_followers_count': tweet['user']['followers_count'],
+                    'geo': tweet['geo']
+                }
+                logger.debug(payload)
+                record = {
+                    'Data': json.dumps(payload),
+                    'PartitionKey': tweet['id_str']
+                }
+                records.append(record)
 
         logger.info(len(records))
         if len(records) > 0:
@@ -135,7 +146,7 @@ def kinesis_put_records(tweets):
                 Records=records,
                 StreamName='Tweet'
             )
-            logger.info(response)
+            logger.debug(response)
 
     except Exception as e:
         raise e
@@ -151,14 +162,15 @@ def lambda_handler(event, context):
         since_id = get_since_id()
         logger.debug(since_id)
 
-        tweets = get_tweets(secret, since_id)
-        logger.debug(tweets)
+        tweets_array = get_tweets(secret, since_id)
+        logger.debug(tweets_array)
 
-        kinesis_put_records(tweets)
+        kinesis_put_records(tweets_array)
 
-        update_since_id(
-            tweets['search_metadata']['max_id_str']
-        )
+        if since_id != tweets_array[0]['search_metadata']['max_id_str']:
+            update_since_id(
+                tweets_array[0]['search_metadata']['max_id_str']
+            )
 
         return {
             'statusCode': '200'
